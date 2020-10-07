@@ -1,0 +1,13 @@
+{
+  "name": "SPI Flash",
+  "apiVersion": "1.0.0",
+  "author": "Scott Shawcroft for Adafruit",
+  "version": "0.8.0",
+  "description": "Annotate common SPI flash commands",
+  "extensions": {
+    "SPI Flash": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "SPIFlashAnalyzer.SPIFlash"
+    }
+  }
+}
