@@ -23,7 +23,8 @@ CONTROL_COMMANDS = {
     0x06: "Write Enable",
     0x05: "Read Status Register",
     0x35: "Read Status Register 2",
-    0x75: "Program Suspend"
+    0x75: "Program Suspend",
+    0xAB: "Release Power-down / Device ID"
 }
 
 class FakeFrame:
@@ -50,7 +51,7 @@ class SPIFlash(HighLevelAnalyzer):
             'format': '{{data.command}}'
         },
         'data_command': {
-            'format': '{{data.command}} 0x{{data.address}}'
+            'format': '{{data.command}} 0x{{data.address}} - 0x{{data.address_end}}'
         }
     }
 
@@ -104,7 +105,7 @@ class SPIFlash(HighLevelAnalyzer):
                 diff = frame.start_time - self._last_time
             else:
                 diff = self._fastest_cs
-            diff = float(diff * 1_000_000_000)
+                diff = float(diff * 1_000_000_000)
 
             self._fastest_cs = min(diff * 4, self._fastest_cs)
             if diff > self._fastest_cs and cs == 0:
@@ -205,9 +206,18 @@ class SPIFlash(HighLevelAnalyzer):
                             frame_type = None
                         else:
                             frame_data["address"] = self._address_format.format(frame_address)
+                            # Fast read has a dummy byte
+                            if frame_data["command"] == DATA_COMMANDS[0x0b]:
+                                frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - 3)
+                            else:
+                                frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - 2)
+
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
+                    else:
+                        # Unrecognized commands are printed in hexadecimal
+                        frame_data["command"] = ''.join([ '0x', hex(command).upper()[2:] ])
                     frame_type = "control_command"
                 our_frame = None
                 if frame_type:
