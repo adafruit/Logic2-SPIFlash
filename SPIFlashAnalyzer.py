@@ -105,7 +105,7 @@ class SPIFlash(HighLevelAnalyzer):
                 diff = frame.start_time - self._last_time
             else:
                 diff = self._fastest_cs
-                diff = float(diff * 1_000_000_000)
+            diff = float(diff * 1_000_000_000)
 
             self._fastest_cs = min(diff * 4, self._fastest_cs)
             if diff > self._fastest_cs and cs == 0:
@@ -206,12 +206,11 @@ class SPIFlash(HighLevelAnalyzer):
                             frame_type = None
                         else:
                             frame_data["address"] = self._address_format.format(frame_address)
+                            non_data_bytes = 2
                             # Fast read has a dummy byte
                             if frame_data["command"] == DATA_COMMANDS[0x0b]:
-                                frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - 3)
-                            else:
-                                frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - 2)
-
+                                non_data_bytes += 1
+                            frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - non_data_bytes)
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
