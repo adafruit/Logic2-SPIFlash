@@ -120,6 +120,10 @@ class SPIFlash(HighLevelAnalyzer):
                     self._command = 0
                     self._quad_start = None
                     self._dummy = 0
+
+                    # Zero the data buffers to prevent issues with odd lengths of transactions if QSPI mode isn't detected properly.
+                    self._mosi_out = 0
+                    self._miso_in = 0
                 else:
                     self._clock_count = 8
                     f = FakeFrame("result")
