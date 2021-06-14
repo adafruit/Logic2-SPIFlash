@@ -7,12 +7,17 @@ import struct
 
 # value is dummy clocks
 CONTINUE_COMMANDS = {
+    0x6b: 8,
     0xe7: 2,
     0xeb: 4,
 }
 
 DATA_COMMANDS = {0x03: "Read",
                  0x0b: "Fast Read",
+                 0x5b: "Read SFDP",
+                 0x6b: "Quad-Output Fast Read",
+                 0x9e: "Read JEDEC ID",
+                 0x9f: "Read JEDEC ID",
                  0xe7: "Quad Word Read",
                  0xeb: "Quad Read",
                  0x02: "Page Program",
