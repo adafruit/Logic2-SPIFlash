@@ -18,13 +18,19 @@ DATA_COMMANDS = {0x03: "Read",
                  0x02: "Page Program",
                  0x32: "Quad Page Program"}
 
+EN4B = 0xB7
+EX4B = 0xE9
 CONTROL_COMMANDS = {
     0x01: "Write Status Register 1",
     0x06: "Write Enable",
+    0x04: "Write Disable",
     0x05: "Read Status Register",
     0x35: "Read Status Register 2",
+    0x5A: "Read SFDP Mode",
     0x75: "Program Suspend",
-    0xAB: "Release Power-down / Device ID"
+    0xAB: "Release Power-down / Device ID",
+    EN4B: "Enable 4 Byte Address",
+    EX4B: "Exit 4 Byte Address"
 }
 
 class FakeFrame:
@@ -217,6 +223,12 @@ class SPIFlash(HighLevelAnalyzer):
                     else:
                         # Unrecognized commands are printed in hexadecimal
                         frame_data["command"] = ''.join([ '0x', hex(command).upper()[2:] ])
+                    if command == EN4B:
+                        self._address_bytes = 4
+                        self._address_format = "{:0" + str(2*int(self._address_bytes)) + "x}"
+                    elif command == EX4B:
+                        self._address_bytes = 3
+                        self._address_format = "{:0" + str(2*int(self._address_bytes)) + "x}"
                     frame_type = "control_command"
                 our_frame = None
                 if frame_type:
