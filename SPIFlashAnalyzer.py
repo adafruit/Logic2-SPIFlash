@@ -7,12 +7,17 @@ import struct
 
 # value is dummy clocks
 CONTINUE_COMMANDS = {
+    0x6b: 8,
     0xe7: 2,
     0xeb: 4,
 }
 
 DATA_COMMANDS = {0x03: "Read",
                  0x0b: "Fast Read",
+                 0x5b: "Read SFDP",
+                 0x6b: "Quad-Output Fast Read",
+                 0x9e: "Read JEDEC ID",
+                 0x9f: "Read JEDEC ID",
                  0xe7: "Quad Word Read",
                  0xeb: "Quad Read",
                  0x02: "Page Program",
@@ -126,6 +131,10 @@ class SPIFlash(HighLevelAnalyzer):
                     self._command = 0
                     self._quad_start = None
                     self._dummy = 0
+
+                    # Zero the data buffers to prevent issues with odd lengths of transactions if QSPI mode isn't detected properly.
+                    self._mosi_out = 0
+                    self._miso_in = 0
                 else:
                     self._clock_count = 8
                     f = FakeFrame("result")
