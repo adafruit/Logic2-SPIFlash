@@ -62,7 +62,7 @@ class SPIFlash(HighLevelAnalyzer):
             'format': '{{data.command}}'
         },
         'data_command': {
-            'format': '{{data.command}} 0x{{data.address}} - 0x{{data.address_end}}'
+            'format': '{{data.command}} 0x{{data.address}} - 0x{{data.address_end}} ({{data.num_bytes}} data bytes)'
         }
     }
 
@@ -177,7 +177,13 @@ class SPIFlash(HighLevelAnalyzer):
                         f.data["miso"] = [self._quad_data]
                     frames.append(f)
                     if self._command in CONTINUE_COMMANDS and self._clock_count == 15:
-                        self._continuous = self._quad_data == 0xa0
+                        # At least some SPI flashes use 'nibbles are complements' to enter
+                        # continous read mode (or ST calls 'send instruction only'). So this
+                        # should check for e.g., 0xa5. Unclear if some flashes don't do this
+                        # and just use any pattern in high nibble, so check for 0xA in high
+                        # nibble which seems to work in practice. If you aren't seeing
+                        # continous reads working look here first.
+                        self._continuous = (self._quad_data & 0xf0) == 0xa0
                     self._quad_data = 0
 
             self._clock_count += 1
@@ -225,7 +231,12 @@ class SPIFlash(HighLevelAnalyzer):
                             # Fast read has a dummy byte
                             if frame_data["command"] == DATA_COMMANDS[0x0b]:
                                 non_data_bytes += 1
-                            frame_data["address_end"] = self._address_format.format(frame_address + len(self._mosi_data) - int(self.address_bytes) - non_data_bytes)
+                            # QSPI read has dummy (4 cycles = 2bytes)
+                            if frame_data["command"] == DATA_COMMANDS[0xeb]:
+                                non_data_bytes += 2
+                            num_data_bytes = len(self._mosi_data) - int(self.address_bytes) - non_data_bytes
+                            frame_data["num_bytes"] = num_data_bytes
+                            frame_data["address_end"] = self._address_format.format(frame_address + num_data_bytes)
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
