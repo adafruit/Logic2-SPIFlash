@@ -23,6 +23,10 @@ DATA_COMMANDS = {0x03: "Read",
                  0x02: "Page Program",
                  0x32: "Quad Page Program"}
 
+ERASE_COMMANDS = {0x20: "Sector Erase",
+                  0x52: "32KB Block Erase",
+                  0xd8: "64KB Block Erase"}
+
 EN4B = 0xB7
 EX4B = 0xE9
 CONTROL_COMMANDS = {
@@ -63,6 +67,9 @@ class SPIFlash(HighLevelAnalyzer):
         },
         'data_command': {
             'format': '{{data.command}} 0x{{data.address}} - 0x{{data.address_end}} ({{data.num_bytes}} data bytes)'
+        },
+        'erase_command': {
+            'format': '{{data.command}} 0x{{data.address}}'
         }
     }
 
@@ -227,16 +234,22 @@ class SPIFlash(HighLevelAnalyzer):
                             frame_type = None
                         else:
                             frame_data["address"] = self._address_format.format(frame_address)
-                            non_data_bytes = 2
-                            # Fast read has a dummy byte
-                            if frame_data["command"] == DATA_COMMANDS[0x0b]:
-                                non_data_bytes += 1
-                            # QSPI read has dummy (4 cycles = 2bytes)
-                            if frame_data["command"] == DATA_COMMANDS[0xeb]:
-                                non_data_bytes += 2
-                            num_data_bytes = len(self._mosi_data) - int(self.address_bytes) - non_data_bytes
-                            frame_data["num_bytes"] = num_data_bytes
-                            frame_data["address_end"] = self._address_format.format(frame_address + num_data_bytes)
+                elif command in ERASE_COMMANDS:
+                    if len(self._mosi_data) < 1 + int(self._address_bytes):
+                        frame_type = "error"
+                    else:
+                        frame_type = "erase_command"
+                        frame_data["command"] = ERASE_COMMANDS[command]
+                        frame_address = 0
+                        for i in range(int(self._address_bytes)):
+                            frame_address <<= 8
+                            frame_address += self._mosi_data[1+i]
+                        if self.min_address > 0 and frame_address < self._min_address:
+                            frame_type = None
+                        elif self.max_address and frame_address > self.max_address:
+                            frame_type = None
+                        else:
+                            frame_data["address"] = self._address_format.format(frame_address)
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
