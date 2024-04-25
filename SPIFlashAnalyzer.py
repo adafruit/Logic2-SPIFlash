@@ -1,15 +1,19 @@
 # High Level Analyzer
 # For more information and documentation, please go to https://support.saleae.com/extensions/high-level-analyzer-extensions
 
-from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame, StringSetting, NumberSetting, ChoicesSetting
+from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame, NumberSetting, ChoicesSetting
 
 import struct
 
-# value is dummy clocks
-CONTINUE_COMMANDS = {
-    0x6b: 8,
-    0xe7: 2,
-    0xeb: 4,
+# value is dummy bytes
+QUAD_CONTINUE_COMMANDS = {
+    0x6b: 4,
+    0xe7: 1,
+    0xeb: 2,
+}
+
+DUAL_CONTINUE_COMMANDS = {
+    0xbb: 0,
 }
 
 DATA_COMMANDS = {0x03: "Read",
@@ -21,7 +25,9 @@ DATA_COMMANDS = {0x03: "Read",
                  0xe7: "Quad Word Read",
                  0xeb: "Quad Read",
                  0x02: "Page Program",
-                 0x32: "Quad Page Program"}
+                 0x32: "Quad Page Program",
+                 0x3b: "Dual Read Output",
+                 0xbb: "Dual Read I/O"}
 
 EN4B = 0xB7
 EX4B = 0xE9
@@ -48,7 +54,6 @@ class FakeFrame:
 # High level analyzers must subclass the HighLevelAnalyzer class.
 class SPIFlash(HighLevelAnalyzer):
     # List of settings that a user can set for this High Level Analyzer.
-    address_bytes = NumberSetting(min_value=1, max_value=4)
     min_address = NumberSetting(min_value=0)
     max_address = NumberSetting(min_value=0)
     decode_level = ChoicesSetting(choices=('Everything', 'Only Data', 'Only Errors', 'Only Control'))
@@ -62,7 +67,10 @@ class SPIFlash(HighLevelAnalyzer):
             'format': '{{data.command}}'
         },
         'data_command': {
-            'format': '{{data.command}} 0x{{data.address}} - 0x{{data.address_end}} ({{data.num_bytes}} data bytes)'
+            'format': '{{data.command}} 0x{{data.address}}'
+        },
+        'data': {
+            'format': '{{data.num_bytes}} data bytes (to 0x{{data.address_end}})'
         }
     }
 
@@ -93,6 +101,7 @@ class SPIFlash(HighLevelAnalyzer):
         self._mosi_out = 0
         self._miso_in = 0
         self._quad_data = 0
+        self._dual_start = None
         self._quad_start = None
         self._continuous = False
         self._dummy = 0
@@ -130,11 +139,13 @@ class SPIFlash(HighLevelAnalyzer):
                 if not self._continuous:
                     self._command = 0
                     self._quad_start = None
+                    self._dual_start = None
                     self._dummy = 0
 
                     # Zero the data buffers to prevent issues with odd lengths of transactions if QSPI mode isn't detected properly.
                     self._mosi_out = 0
                     self._miso_in = 0
+                    self._quad_data = 0
                 else:
                     self._clock_count = 8
                     f = FakeFrame("result")
@@ -148,35 +159,38 @@ class SPIFlash(HighLevelAnalyzer):
             if cs == 1:
                 return None
 
-            if self._quad_start is None or self._clock_count < self._quad_start:
+            if (self._quad_start is None or self._clock_count < self._quad_start) and (self._dual_start is None or self._clock_count < self._dual_start):
                 self._mosi_out = self._mosi_out << 1 | (data & 0x1)
                 self._miso_in = self._miso_in << 1 | ((data >> 1) & 0x1)
                 if self._clock_count % 8 == 7:
                     if self._clock_count == 7:
                         self._command = self._mosi_out
-                        if self._command in CONTINUE_COMMANDS:
+                        if self._command in QUAD_CONTINUE_COMMANDS:
                             self._quad_start = 8
-                            self._dummy = CONTINUE_COMMANDS[self._command]
+                            self._dummy = QUAD_CONTINUE_COMMANDS[self._command]
+                        elif self._command in DUAL_CONTINUE_COMMANDS:
+                            self._dual_start = 8
+                            self._dummy = DUAL_CONTINUE_COMMANDS[self._command]
 
-                    f = FakeFrame("result")
+                    f = FakeFrame("result", frame.start_time)
                     f.data["mosi"] = [self._mosi_out]
                     f.data["miso"] = [self._miso_in]
                     frames.append(f)
                     self._mosi_out = 0
                     self._miso_in = 0
             else:
-                self._quad_data = (self._quad_data << 4 | data & 0xf)
-                if self._clock_count % 2 == 1:
-
-                    f = FakeFrame("result")
-                    if not 15 < self._clock_count <= 15 + self._dummy:
-                        f.data["mosi"] = [self._quad_data]
-                        f.data["miso"] = [0]
-                    else:
-                        f.data["mosi"] = [0]
-                        f.data["miso"] = [self._quad_data]
-                    frames.append(f)
-                    if self._command in CONTINUE_COMMANDS and self._clock_count == 15:
+                if self._dual_start is not None:
+                    bits = 2
+                    start = self._dual_start
+                else:
+                    bits = 4
+                    start = self._quad_start
+                divider = 8 // bits
+                byte_count = start // 8 + (self._clock_count - start) // divider
+                self._quad_data = (self._quad_data << bits | (data & ((1 << bits) - 1)))
+                if self._clock_count % divider == divider - 1:
+                    f = FakeFrame("result", frame.start_time)
+                    if (self._command in QUAD_CONTINUE_COMMANDS or self._command in DUAL_CONTINUE_COMMANDS) and byte_count == 4:
                         # At least some SPI flashes use 'nibbles are complements' to enter
                         # continous read mode (or ST calls 'send instruction only'). So this
                         # should check for e.g., 0xa5. Unclear if some flashes don't do this
@@ -184,6 +198,14 @@ class SPIFlash(HighLevelAnalyzer):
                         # nibble which seems to work in practice. If you aren't seeing
                         # continous reads working look here first.
                         self._continuous = (self._quad_data & 0xf0) == 0xa0
+                    elif byte_count < 1 + self._address_bytes:
+                        f.data["mosi"] = [self._quad_data]
+                        f.data["miso"] = [0]
+                        frames.append(f)
+                    else:
+                        f.data["mosi"] = [0]
+                        f.data["miso"] = [self._quad_data]
+                        frames.append(f)
                     self._quad_data = 0
 
             self._clock_count += 1
@@ -193,6 +215,8 @@ class SPIFlash(HighLevelAnalyzer):
 
         output = None
         for fake_frame in frames:
+            frame_type = None
+            frame_data = {}
             if fake_frame.type == "enable":
                 self._start_time = fake_frame.start_time
                 self._miso_data = bytearray()
@@ -205,18 +229,32 @@ class SPIFlash(HighLevelAnalyzer):
                     continue
                 self._miso_data.extend(fake_frame.data["miso"])
                 self._mosi_data.extend(fake_frame.data["mosi"])
+                command = self._mosi_data[0]
+                # Output data commands and their address immediately.
+                if len(self._mosi_data) == 1 + self._address_bytes and command in DATA_COMMANDS:
+                    frame_type = "data_command"
+                    frame_data["command"] = DATA_COMMANDS[command]
+                    frame_address = 0
+                    for i in range(int(self._address_bytes)):
+                        frame_address <<= 8
+                        frame_address += self._mosi_data[1+i]
+                    if self.min_address > 0 and frame_address < self._min_address:
+                        frame_type = None
+                    elif self.max_address and frame_address > self.max_address:
+                        frame_type = None
+                    else:
+                        frame_data["address"] = self._address_format.format(frame_address)
+
             elif fake_frame.type == "disable":
                 if not self._miso_data or not self._mosi_data:
                     continue
                 command = self._mosi_data[0]
-                frame_type = None
-                frame_data = {"command": command}
+                frame_data["command"] = command
                 if command in DATA_COMMANDS:
                     if len(self._mosi_data) < 1 + int(self._address_bytes):
                         frame_type = "error"
                     else:
-                        frame_type = "data_command"
-                        frame_data["command"] = DATA_COMMANDS[command]
+                        frame_type = "data"
                         frame_address = 0
                         for i in range(int(self._address_bytes)):
                             frame_address <<= 8
@@ -226,15 +264,9 @@ class SPIFlash(HighLevelAnalyzer):
                         elif self.max_address and frame_address > self.max_address:
                             frame_type = None
                         else:
-                            frame_data["address"] = self._address_format.format(frame_address)
-                            non_data_bytes = 2
-                            # Fast read has a dummy byte
-                            if frame_data["command"] == DATA_COMMANDS[0x0b]:
-                                non_data_bytes += 1
-                            # QSPI read has dummy (4 cycles = 2bytes)
-                            if frame_data["command"] == DATA_COMMANDS[0xeb]:
-                                non_data_bytes += 2
-                            num_data_bytes = len(self._mosi_data) - int(self.address_bytes) - non_data_bytes
+                            # -1 for command
+                            num_data_bytes = len(self._mosi_data) - self._address_bytes - 1 - self._dummy
+                            print(num_data_bytes)
                             frame_data["num_bytes"] = num_data_bytes
                             frame_data["address_end"] = self._address_format.format(frame_address + num_data_bytes)
                 else:
@@ -250,19 +282,23 @@ class SPIFlash(HighLevelAnalyzer):
                         self._address_bytes = 3
                         self._address_format = "{:0" + str(2*int(self._address_bytes)) + "x}"
                     frame_type = "control_command"
-                our_frame = None
-                if frame_type:
-                    our_frame = AnalyzerFrame(frame_type,
-                                              self._start_time,
-                                              fake_frame.end_time,
-                                              frame_data)
+
+                # Reset on disable
                 self._miso_data = None
                 self._mosi_data = None
-                if self.decode_level == 'Only Data' and frame_type == "control_command":
-                    continue
-                if self.decode_level == 'Only Errors' and frame_type != "error":
-                    continue
-                if self.decode_level == "Only Control" and frame_type != "control_command":
-                    continue
+            our_frame = None
+            if frame_type:
+                our_frame = AnalyzerFrame(frame_type,
+                                          self._start_time,
+                                          fake_frame.end_time,
+                                          frame_data)
+                self._start_time = fake_frame.start_time
+            if self.decode_level == 'Only Data' and frame_type == "control_command":
+                continue
+            if self.decode_level == 'Only Errors' and frame_type != "error":
+                continue
+            if self.decode_level == "Only Control" and frame_type != "control_command":
+                continue
+            if our_frame:
                 output = our_frame
         return output
