@@ -119,16 +119,23 @@ class SPIFlash(HighLevelAnalyzer):
         # Support getting data from a Simple Parallel and converting it.
         frames = []
         if frame.type == "data":
+            reset_cs = False
             data = frame.data["data"]
-            cs = data >> 15
-            if self._last_time:
-                diff = frame.start_time - self._last_time
+            if "index" in frame.data:
+                reset_cs = frame.data["index"] == 0
+                cs = 0
             else:
-                diff = self._fastest_cs
-            diff = float(diff * 1_000_000_000)
+                cs = data >> 15
+                if self._last_time:
+                    diff = frame.start_time - self._last_time
+                else:
+                    diff = self._fastest_cs
+                diff = float(diff * 1_000_000_000)
 
-            self._fastest_cs = min(diff * 4, self._fastest_cs)
-            if diff > self._fastest_cs and cs == 0:
+                self._fastest_cs = min(diff * 6, self._fastest_cs)
+                reset_cs = diff > self._fastest_cs and cs == 0
+
+            if reset_cs:
                 if self._transaction > 0:
                     frames.append(FakeFrame("disable", self._last_time))
 
