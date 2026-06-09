@@ -299,7 +299,7 @@ class SPIFlash(HighLevelAnalyzer):
                                           self._start_time,
                                           fake_frame.end_time,
                                           frame_data)
-                self._start_time = fake_frame.start_time
+                self._start_time = fake_frame.end_time
             if self.decode_level == 'Only Data' and frame_type == "control_command":
                 continue
             if self.decode_level == 'Only Errors' and frame_type != "error":
