@@ -7,27 +7,61 @@ import struct
 
 # value is dummy bytes
 QUAD_CONTINUE_COMMANDS = {
-    0x6b: 4,
-    0xe7: 1,
-    0xeb: 2,
+    0x6b: 4,  # Quad-Output Fast Read (1-1-4)
+    0x6c: 4,  # 4-Byte Quad-Output Fast Read (1-1-4)
+    0xe7: 1,  # Quad Word Read
+    0xeb: 2,  # Quad Read (1-4-4)
+    0xec: 2,  # 4-Byte Quad Read (1-4-4)
 }
 
 DUAL_CONTINUE_COMMANDS = {
-    0xbb: 0,
+    0xbb: 0,  # Dual Read I/O (1-2-2)
+    0xbc: 0,  # 4-Byte Dual Read I/O (1-2-2)
 }
+
+# Commands that always use 4-byte addressing
+FOUR_BYTE_COMMANDS = {
+    0x13,  # 4-Byte Read
+    0x0c,  # 4-Byte Fast Read
+    0x12,  # 4-Byte Page Program
+    0x3c,  # 4-Byte Dual Output Fast Read
+    0x6c,  # 4-Byte Quad Output Fast Read
+    0x34,  # 4-Byte Quad Page Program
+    0x3e,  # 4-Byte Quad Page Program (1-4-4)
+    0xbc,  # 4-Byte Dual I/O Fast Read
+    0xec,  # 4-Byte Quad I/O Fast Read
+    0x21,  # 4-Byte Sector Erase
+    0xdc,  # 4-Byte Block Erase
+}
+
+# Erase commands - take address but no data bytes
+ERASE_COMMANDS = {0x20: "Sector Erase",
+                  0x21: "4-Byte Sector Erase",
+                  0x52: "Block Erase 32KB",
+                  0xd8: "Block Erase",
+                  0xdc: "4-Byte Block Erase"}
 
 DATA_COMMANDS = {0x03: "Read",
                  0x0b: "Fast Read",
+                 0x0c: "4-Byte Fast Read",
+                 0x13: "4-Byte Read",
+                 0x12: "4-Byte Page Program",
                  0x5b: "Read SFDP",
                  0x6b: "Quad-Output Fast Read",
-                 0x9e: "Read JEDEC ID",
-                 0x9f: "Read JEDEC ID",
+                 0x6c: "4-Byte Quad-Output Fast Read",
+                 0xa2: "Dual Page Program",
                  0xe7: "Quad Word Read",
                  0xeb: "Quad Read",
+                 0xec: "4-Byte Quad Read",
                  0x02: "Page Program",
                  0x32: "Quad Page Program",
+                 0x34: "4-Byte Quad Page Program",
+                 0x38: "Quad Page Program (1-4-4)",
+                 0x3e: "4-Byte Quad Page Program (1-4-4)",
                  0x3b: "Dual Read Output",
-                 0xbb: "Dual Read I/O"}
+                 0x3c: "4-Byte Dual Read Output",
+                 0xbb: "Dual Read I/O",
+                 0xbc: "4-Byte Dual Read I/O"}
 
 EN4B = 0xB7
 EX4B = 0xE9
@@ -38,8 +72,16 @@ CONTROL_COMMANDS = {
     0x05: "Read Status Register",
     0x35: "Read Status Register 2",
     0x5A: "Read SFDP Mode",
+    0x60: "Bulk Erase",
+    0x66: "Reset Enable",
     0x75: "Program Suspend",
+    0x98: "Global Block Protection Unlock",
+    0x99: "Reset Memory",
+    0x9E: "Read JEDEC ID",
+    0x9F: "Read JEDEC ID",
     0xAB: "Release Power-down / Device ID",
+    0xB9: "Deep Power Down",
+    0xC7: "Chip Erase",
     EN4B: "Enable 4 Byte Address",
     EX4B: "Exit 4 Byte Address"
 }
@@ -238,11 +280,12 @@ class SPIFlash(HighLevelAnalyzer):
                 self._mosi_data.extend(fake_frame.data["mosi"])
                 command = self._mosi_data[0]
                 # Output data commands and their address immediately.
-                if len(self._mosi_data) == 1 + self._address_bytes and command in DATA_COMMANDS:
+                cmd_address_bytes = 4 if command in FOUR_BYTE_COMMANDS else self._address_bytes
+                if len(self._mosi_data) == 1 + cmd_address_bytes and command in DATA_COMMANDS:
                     frame_type = "data_command"
                     frame_data["command"] = DATA_COMMANDS[command]
                     frame_address = 0
-                    for i in range(int(self._address_bytes)):
+                    for i in range(int(cmd_address_bytes)):
                         frame_address <<= 8
                         frame_address += self._mosi_data[1+i]
                     if self.min_address > 0 and frame_address < self._min_address:
@@ -258,12 +301,13 @@ class SPIFlash(HighLevelAnalyzer):
                 command = self._mosi_data[0]
                 frame_data["command"] = command
                 if command in DATA_COMMANDS:
-                    if len(self._mosi_data) < 1 + int(self._address_bytes):
+                    cmd_address_bytes = 4 if command in FOUR_BYTE_COMMANDS else self._address_bytes
+                    if len(self._mosi_data) < 1 + int(cmd_address_bytes):
                         frame_type = "error"
                     else:
                         frame_type = "data"
                         frame_address = 0
-                        for i in range(int(self._address_bytes)):
+                        for i in range(int(cmd_address_bytes)):
                             frame_address <<= 8
                             frame_address += self._mosi_data[1+i]
                         if self.min_address > 0 and frame_address < self._min_address:
@@ -272,10 +316,28 @@ class SPIFlash(HighLevelAnalyzer):
                             frame_type = None
                         else:
                             # -1 for command
-                            num_data_bytes = len(self._mosi_data) - self._address_bytes - 1 - self._dummy
+                            num_data_bytes = len(self._mosi_data) - cmd_address_bytes - 1 - self._dummy
                             print(num_data_bytes)
                             frame_data["num_bytes"] = num_data_bytes
                             frame_data["address_end"] = self._address_format.format(frame_address + num_data_bytes)
+                elif command in ERASE_COMMANDS:
+                    # Erase commands take an address but no data bytes
+                    cmd_address_bytes = 4 if command in FOUR_BYTE_COMMANDS else self._address_bytes
+                    if len(self._mosi_data) < 1 + int(cmd_address_bytes):
+                        frame_type = "error"
+                    else:
+                        frame_type = "data_command"
+                        frame_data["command"] = ERASE_COMMANDS[command]
+                        frame_address = 0
+                        for i in range(int(cmd_address_bytes)):
+                            frame_address <<= 8
+                            frame_address += self._mosi_data[1+i]
+                        if self.min_address > 0 and frame_address < self._min_address:
+                            frame_type = None
+                        elif self.max_address and frame_address > self.max_address:
+                            frame_type = None
+                        else:
+                            frame_data["address"] = self._address_format.format(frame_address)
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
